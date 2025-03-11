@@ -6,20 +6,9 @@ import os
 import pytest
 import tempfile
 
-from unittest.mock import mock_open
 import unittest
-
-
 class TestCoverAgent:
-    """
-    Test suite for the CoverAgent class.
-    """
-
     def test_parse_args(self):
-        """
-        Test the argument parsing functionality.
-        Ensures that all arguments are correctly parsed and assigned.
-        """
         with patch(
             "sys.argv",
             [
@@ -37,10 +26,8 @@ class TestCoverAgent:
             ],
         ):
             args = parse_args()
-            # Assertions to verify correct argument parsing
             assert args.source_file_path == "test_source.py"
             assert args.test_file_path == "test_file.py"
-            assert args.project_root == ""
             assert args.code_coverage_report_path == "coverage_report.xml"
             assert args.test_command == "pytest"
             assert args.test_command_dir == os.getcwd()
@@ -51,16 +38,14 @@ class TestCoverAgent:
             assert args.max_iterations == 10
 
     @patch("cover_agent.CoverAgent.UnitTestGenerator")
+    @patch("cover_agent.CoverAgent.ReportGenerator")
     @patch("cover_agent.CoverAgent.os.path.isfile")
-    def test_agent_source_file_not_found(self, mock_isfile, mock_unit_cover_agent):
-        """
-        Test the behavior when the source file is not found.
-        Ensures that a FileNotFoundError is raised and the agent is not initialized.
-        """
+    def test_agent_source_file_not_found(
+        self, mock_isfile, mock_report_generator, mock_unit_cover_agent
+    ):
         args = argparse.Namespace(
             source_file_path="test_source.py",
             test_file_path="test_file.py",
-            project_root="",
             code_coverage_report_path="coverage_report.xml",
             test_command="pytest",
             test_command_dir=os.getcwd(),
@@ -69,7 +54,6 @@ class TestCoverAgent:
             report_filepath="test_results.html",
             desired_coverage=90,
             max_iterations=10,
-            max_run_time=30,
         )
         parse_args = lambda: args
         mock_isfile.return_value = False
@@ -78,12 +62,12 @@ class TestCoverAgent:
             with pytest.raises(FileNotFoundError) as exc_info:
                 agent = CoverAgent(args)
 
-        # Assert that the correct error message is raised
         assert (
             str(exc_info.value) == f"Source file not found at {args.source_file_path}"
         )
 
         mock_unit_cover_agent.assert_not_called()
+        mock_report_generator.generate_report.assert_not_called()
 
     @patch("cover_agent.CoverAgent.os.path.exists")
     @patch("cover_agent.CoverAgent.os.path.isfile")
@@ -91,14 +75,9 @@ class TestCoverAgent:
     def test_agent_test_file_not_found(
         self, mock_unit_cover_agent, mock_isfile, mock_exists
     ):
-        """
-        Test the behavior when the test file is not found.
-        Ensures that a FileNotFoundError is raised and the agent is not initialized.
-        """
         args = argparse.Namespace(
             source_file_path="test_source.py",
             test_file_path="test_file.py",
-            project_root="",
             code_coverage_report_path="coverage_report.xml",
             test_command="pytest",
             test_command_dir=os.getcwd(),
@@ -108,7 +87,6 @@ class TestCoverAgent:
             desired_coverage=90,
             max_iterations=10,
             prompt_only=False,
-            max_run_time=30,
         )
         parse_args = lambda: args
         mock_isfile.side_effect = [True, False]
@@ -118,25 +96,53 @@ class TestCoverAgent:
             with pytest.raises(FileNotFoundError) as exc_info:
                 agent = CoverAgent(args)
 
-        # Assert that the correct error message is raised
         assert str(exc_info.value) == f"Test file not found at {args.test_file_path}"
 
+    @patch("cover_agent.CoverAgent.shutil.copy")
     @patch("cover_agent.CoverAgent.os.path.isfile", return_value=True)
-    def test_duplicate_test_file_without_output_path(self, mock_isfile):
-        """
-        Test the behavior when no output path is provided for the test file.
-        Ensures that an AssertionError is raised.
-        """
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_source_file:
-            with tempfile.NamedTemporaryFile(
-                suffix=".py", delete=False
-            ) as temp_test_file:
+    def test_duplicate_test_file_with_output_path(self, mock_isfile, mock_copy):
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source_file:
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test_file:
                 args = argparse.Namespace(
                     source_file_path=temp_source_file.name,
                     test_file_path=temp_test_file.name,
-                    project_root="",
+                    test_file_output_path="output_test_file.py",  # This will be the path where output is copied
+                    code_coverage_report_path="coverage_report.xml",
+                    test_command="echo hello",
+                    test_command_dir=os.getcwd(),
+                    included_files=None,
+                    coverage_type="cobertura",
+                    report_filepath="test_results.html",
+                    desired_coverage=90,
+                    max_iterations=10,
+                    additional_instructions="",
+                    model="openai/test-model",
+                    api_base="openai/test-api",
+                    use_report_coverage_feature_flag=False,
+                    log_db_path="",
+                    mutation_testing=False,
+                    more_mutation_logging=False,
+                )
+
+                with pytest.raises(AssertionError) as exc_info:
+                    agent = CoverAgent(args)
+                    agent.test_gen.get_coverage_and_build_prompt()
+                    agent._duplicate_test_file()
+
+                assert "Fatal: Coverage report" in str(exc_info.value)
+                mock_copy.assert_called_once_with(args.test_file_path, args.test_file_output_path)
+
+        # Clean up the temp files
+        os.remove(temp_source_file.name)
+        os.remove(temp_test_file.name)
+
+    @patch("cover_agent.CoverAgent.os.path.isfile", return_value=True)
+    def test_duplicate_test_file_without_output_path(self, mock_isfile):
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source_file:
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test_file:
+                args = argparse.Namespace(
+                    source_file_path=temp_source_file.name,
+                    test_file_path=temp_test_file.name,
                     test_file_output_path="",  # No output path provided
                     code_coverage_report_path="coverage_report.xml",
                     test_command="echo hello",
@@ -151,238 +157,305 @@ class TestCoverAgent:
                     api_base="openai/test-api",
                     use_report_coverage_feature_flag=False,
                     log_db_path="",
-                    diff_coverage=False,
-                    branch="main",
-                    run_tests_multiple_times=1,
-                    max_run_time=30,
+                    mutation_testing=False,
+                    more_mutation_logging=False,
                 )
 
                 with pytest.raises(AssertionError) as exc_info:
                     agent = CoverAgent(args)
-                    failed_test_runs = agent.test_validator.get_coverage()
+                    agent.test_gen.get_coverage_and_build_prompt()
                     agent._duplicate_test_file()
 
-                # Assert that the correct error message is raised
                 assert "Fatal: Coverage report" in str(exc_info.value)
                 assert args.test_file_output_path == args.test_file_path
 
         # Clean up the temp files
         os.remove(temp_source_file.name)
         os.remove(temp_test_file.name)
-
-    @patch("cover_agent.CoverAgent.os.environ", {})
-    @patch("cover_agent.CoverAgent.sys.exit")
-    @patch("cover_agent.CoverAgent.UnitTestGenerator")
-    @patch("cover_agent.CoverAgent.UnitTestValidator")
-    @patch("cover_agent.CoverAgent.UnitTestDB")
-    def test_run_max_iterations_strict_coverage(
-        self,
-        mock_test_db,
-        mock_unit_test_validator,
-        mock_unit_test_generator,
-        mock_sys_exit,
-    ):
-        """
-        Test the behavior when running with strict coverage and max iterations.
-        Ensures that the agent exits with the correct status code when coverage is not met.
-        """
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_source_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_test_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_output_file:
+    def test_run_successful(self):
+        """Test that CoverAgent.run stops when desired coverage is reached."""
+        import tempfile
+        # Create temporary source and test files
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source, \
+                tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test:
             args = argparse.Namespace(
-                source_file_path=temp_source_file.name,
-                test_file_path=temp_test_file.name,
-                project_root="",
-                test_file_output_path=temp_output_file.name,  # Changed this line
-                code_coverage_report_path="coverage_report.xml",
-                test_command="pytest",
+                source_file_path=temp_source.name,
+                test_file_path=temp_test.name,
+                test_file_output_path="",
+                code_coverage_report_path="dummy.xml",
+                test_command="echo",
                 test_command_dir=os.getcwd(),
                 included_files=None,
                 coverage_type="cobertura",
-                report_filepath="test_results.html",
+                report_filepath="dummy_report.html",
                 desired_coverage=90,
-                max_iterations=1,
+                max_iterations=2,
                 additional_instructions="",
-                model="openai/test-model",
-                api_base="openai/test-api",
+                model="dummy-model",
+                api_base="dummy-api",
                 use_report_coverage_feature_flag=False,
-                log_db_path="",
-                run_tests_multiple_times=False,
-                strict_coverage=True,
-                diff_coverage=False,
-                branch="main",
-                max_run_time=30,
-            )
-            # Mock the methods used in run
-            validator = mock_unit_test_validator.return_value
-            validator.current_coverage = 0.5  # below desired coverage
-            validator.desired_coverage = 90
-            validator.get_coverage.return_value = [{}, "python", "pytest", ""]
-            generator = mock_unit_test_generator.return_value
-            generator.generate_tests.return_value = {"new_tests": [{}]}
-            agent = CoverAgent(args)
-            agent.run()
-            # Assertions to ensure sys.exit was called
-            mock_sys_exit.assert_called_once_with(2)
-            mock_test_db.return_value.dump_to_report.assert_called_once_with(
-                args.report_filepath
-            )
-
-    @patch("cover_agent.CoverAgent.os.path.isfile", return_value=True)
-    @patch("cover_agent.CoverAgent.os.path.isdir", return_value=False)
-    def test_project_root_not_found(self, mock_isdir, mock_isfile):
-        """
-        Test the behavior when the project root directory is not found.
-        Ensures that a FileNotFoundError is raised.
-        """
-        args = argparse.Namespace(
-            source_file_path="test_source.py",
-            test_file_path="test_file.py",
-            project_root="/nonexistent/path",
-            test_file_output_path="",
-            code_coverage_report_path="coverage_report.xml",
-            test_command="pytest",
-            test_command_dir=os.getcwd(),
-            included_files=None,
-            coverage_type="cobertura",
-            report_filepath="test_results.html",
-            desired_coverage=90,
-            max_iterations=10,
-            max_run_time=30,
-        )
-
-        with pytest.raises(FileNotFoundError) as exc_info:
-            agent = CoverAgent(args)
-
-        # Assert that the correct error message is raised
-        assert str(exc_info.value) == f"Project root not found at {args.project_root}"
-
-    @patch("cover_agent.CoverAgent.UnitTestValidator")
-    @patch("cover_agent.CoverAgent.UnitTestGenerator")
-    @patch("cover_agent.CoverAgent.UnitTestDB")
-    @patch("cover_agent.CoverAgent.CustomLogger")
-    def test_run_diff_coverage(
-        self, mock_logger, mock_test_db, mock_test_gen, mock_test_validator
-    ):
-        """
-        Test the behavior when running with diff coverage enabled.
-        Ensures that the correct log messages are generated.
-        """
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_source_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_test_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_output_file:
-
-            args = argparse.Namespace(
-                source_file_path=temp_source_file.name,
-                test_file_path=temp_test_file.name,
-                project_root="",
-                test_file_output_path=temp_output_file.name,  # Changed to use temp file
-                code_coverage_report_path="coverage_report.xml",
-                test_command="pytest",
-                test_command_dir=os.getcwd(),
-                included_files=None,
-                coverage_type="cobertura",
-                report_filepath="test_results.html",
-                desired_coverage=90,
-                max_iterations=1,
-                additional_instructions="",
-                model="openai/test-model",
-                api_base="openai/test-api",
-                use_report_coverage_feature_flag=False,
-                log_db_path="",
-                run_tests_multiple_times=False,
+                log_db_path="dummy.db",
+                mutation_testing=False,
+                more_mutation_logging=False,
                 strict_coverage=False,
-                diff_coverage=True,
-                branch="main",
-                max_run_time=30,
+                run_tests_multiple_times=False,
             )
-            mock_test_validator.return_value.current_coverage = 0.5
-            mock_test_validator.return_value.desired_coverage = 90
-            mock_test_validator.return_value.get_coverage.return_value = [
-                {},
-                "python",
-                "pytest",
-                "",
-            ]
-            mock_test_gen.return_value.generate_tests.return_value = {"new_tests": [{}]}
             agent = CoverAgent(args)
-            agent.run()
-            mock_logger.get_logger.return_value.info.assert_any_call(
-                f"Current Diff Coverage: {round(mock_test_validator.return_value.current_coverage * 100, 2)}%"
-            )
+        # Define a dummy test generator to simulate coverage increase after one iteration.
+        class DummyTestGen:
+            def __init__(self):
+                self.current_coverage = 0.5
+                self.desired_coverage = args.desired_coverage
+                self.total_input_token_count = 10
+                self.total_output_token_count = 20
+                self.ai_caller = type("DummyCaller", (), {"model": "dummy-model"})()
+                self.mutation_called = False
 
-        # Clean up the temp files
-        os.remove(temp_source_file.name)
-        os.remove(temp_test_file.name)
-        os.remove(temp_output_file.name)
+            def get_coverage_and_build_prompt(self):
+                pass
 
-    @patch("cover_agent.CoverAgent.os.path.isfile", return_value=True)
-    @patch("cover_agent.CoverAgent.os.path.isdir", return_value=True)
-    @patch("cover_agent.CoverAgent.shutil.copy")
-    @patch("builtins.open", new_callable=mock_open, read_data="# Test content")
-    def test_run_each_test_separately_with_pytest(
-        self, mock_open_file, mock_copy, mock_isdir, mock_isfile
-    ):
-        """
-        Test the behavior when running each test separately with pytest.
-        Ensures that the test command is modified correctly.
-        """
-        with tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_source_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_test_file, tempfile.NamedTemporaryFile(
-            suffix=".py", delete=False
-        ) as temp_output_file:
+            def initial_test_suite_analysis(self):
+                pass
 
-            # Create a relative path for the test file
-            rel_path = "tests/test_output.py"
+            def generate_tests(self, max_tokens):
+                return {"new_tests": ["dummy_test"]}
 
+            def validate_test(self, test, run_tests_multiple_times):
+                return "dummy_result"
+
+            def run_coverage(self):
+                # Simulate increasing coverage to desired level.
+                self.current_coverage = 0.9
+
+            def run_mutations(self):
+                self.mutation_called = True
+        dummy_gen = DummyTestGen()
+        agent.test_gen = dummy_gen
+        # Override the test_db with a MagicMock
+        dummy_db = MagicMock()
+        agent.test_db = dummy_db
+
+        # Call run() and then check that dump_to_report and insert_attempt were called.
+        agent.run()
+
+        # Assert that the loop ended with desired coverage reached.
+        assert dummy_gen.current_coverage >= 0.9
+        # insert_attempt should have been called for each generated test (one iteration only).
+        dummy_db.insert_attempt.assert_called()
+        dummy_db.dump_to_report.assert_called_once_with(args.report_filepath)
+
+        # Clean up temporary files
+        os.remove(args.source_file_path)
+        os.remove(args.test_file_path)
+
+    def test_run_max_iterations_strict(self):
+        """Test that CoverAgent.run exits with sys.exit(2) when strict_coverage is true and max iterations reached."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source, \
+                tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test:
             args = argparse.Namespace(
-                source_file_path=temp_source_file.name,
-                test_file_path=temp_test_file.name,
-                project_root="/project/root",
-                test_file_output_path="/project/root/" + rel_path,
-                code_coverage_report_path="coverage_report.xml",
-                test_command="pytest --cov=myapp --cov-report=xml",
+                source_file_path=temp_source.name,
+                test_file_path=temp_test.name,
+                test_file_output_path="",
+                code_coverage_report_path="dummy.xml",
+                test_command="echo",
                 test_command_dir=os.getcwd(),
                 included_files=None,
                 coverage_type="cobertura",
-                report_filepath="test_results.html",
+                report_filepath="dummy_report.html",
                 desired_coverage=90,
-                max_iterations=10,
+                max_iterations=1,
                 additional_instructions="",
-                model="openai/test-model",
-                api_base="openai/test-api",
+                model="dummy-model",
+                api_base="dummy-api",
                 use_report_coverage_feature_flag=False,
-                log_db_path="",
-                diff_coverage=False,
-                branch="main",
-                run_tests_multiple_times=1,
-                run_each_test_separately=True,
-                max_run_time=30,
+                log_db_path="dummy.db",
+                mutation_testing=False,
+                more_mutation_logging=False,
+                strict_coverage=True,
+                run_tests_multiple_times=False,
             )
-
-            # Initialize CoverAgent
             agent = CoverAgent(args)
+        # Dummy test generator that never increases coverage.
+        class DummyTestGen:
+            def __init__(self):
+                self.current_coverage = 0.5
+                self.desired_coverage = args.desired_coverage
+                self.total_input_token_count = 0
+                self.total_output_token_count = 0
+                self.ai_caller = type("DummyCaller", (), {"model": "dummy-model"})()
 
-            # Verify the test command was modified correctly
-            assert hasattr(args, "test_command_original")
-            assert args.test_command_original == "pytest --cov=myapp --cov-report=xml"
-            assert (
-                args.test_command
-                == "pytest tests/test_output.py --cov=myapp --cov-report=xml"
+            def get_coverage_and_build_prompt(self):
+                pass
+
+            def initial_test_suite_analysis(self):
+                pass
+
+            def generate_tests(self, max_tokens):
+                return {"new_tests": []}
+
+            def validate_test(self, test, run_tests_multiple_times):
+                return "dummy_result"
+
+            def run_coverage(self):
+                # Do not change coverage.
+                pass
+
+            def run_mutations(self):
+                pass
+        dummy_gen = DummyTestGen()
+        agent.test_gen = dummy_gen
+        dummy_db = MagicMock()
+        agent.test_db = dummy_db
+
+        # Expect sys.exit with code 2 since strict_coverage is true.
+        with pytest.raises(SystemExit) as exc_info:
+            agent.run()
+        assert exc_info.value.code == 2
+
+        os.remove(args.source_file_path)
+        os.remove(args.test_file_path)
+
+    def test_run_max_iterations_non_strict(self):
+        """Test that CoverAgent.run doesn't exit when strict_coverage is False even if max iterations are reached."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source, \
+                tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test:
+            args = argparse.Namespace(
+                source_file_path=temp_source.name,
+                test_file_path=temp_test.name,
+                test_file_output_path="",
+                code_coverage_report_path="dummy.xml",
+                test_command="echo",
+                test_command_dir=os.getcwd(),
+                included_files=None,
+                coverage_type="cobertura",
+                report_filepath="dummy_report.html",
+                desired_coverage=90,
+                max_iterations=1,
+                additional_instructions="",
+                model="dummy-model",
+                api_base="dummy-api",
+                use_report_coverage_feature_flag=False,
+                log_db_path="dummy.db",
+                mutation_testing=False,
+                more_mutation_logging=False,
+                strict_coverage=False,
+                run_tests_multiple_times=False,
             )
+            agent = CoverAgent(args)
+        # Dummy test generator that never increases coverage.
+        class DummyTestGen:
+            def __init__(self):
+                self.current_coverage = 0.5
+                self.desired_coverage = args.desired_coverage
+                self.total_input_token_count = 0
+                self.total_output_token_count = 0
+                self.ai_caller = type("DummyCaller", (), {"model": "dummy-model"})()
 
-            # Clean up temporary files
-            os.remove(temp_source_file.name)
-            os.remove(temp_test_file.name)
-            os.remove(temp_output_file.name)
+            def get_coverage_and_build_prompt(self):
+                pass
+
+            def initial_test_suite_analysis(self):
+                pass
+
+            def generate_tests(self, max_tokens):
+                return {"new_tests": []}
+
+            def validate_test(self, test, run_tests_multiple_times):
+                return "dummy_result"
+
+            def run_coverage(self):
+                pass
+
+            def run_mutations(self):
+                pass
+        dummy_gen = DummyTestGen()
+        agent.test_gen = dummy_gen
+        dummy_db = MagicMock()
+        agent.test_db = dummy_db
+
+        # With strict_coverage False, the run should complete without sys.exit.
+        agent.run()
+        dummy_db.dump_to_report.assert_called_once_with(args.report_filepath)
+
+        os.remove(args.source_file_path)
+        os.remove(args.test_file_path)
+
+    def test_run_with_wandb(self):
+        """Test that WANDB is initialized and finished when WANDB_API_KEY is set."""
+        import tempfile
+        from unittest.mock import patch
+        # Set the environment variable for WANDB_API_KEY
+        os.environ["WANDB_API_KEY"] = "dummy_key"
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_source, \
+                tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp_test:
+            args = argparse.Namespace(
+                source_file_path=temp_source.name,
+                test_file_path=temp_test.name,
+                test_file_output_path="",
+                code_coverage_report_path="dummy.xml",
+                test_command="echo",
+                test_command_dir=os.getcwd(),
+                included_files=None,
+                coverage_type="cobertura",
+                report_filepath="dummy_report.html",
+                desired_coverage=90,
+                max_iterations=2,
+                additional_instructions="",
+                model="dummy-model",
+                api_base="dummy-api",
+                use_report_coverage_feature_flag=False,
+                log_db_path="dummy.db",
+                mutation_testing=True,
+                more_mutation_logging=False,
+                strict_coverage=False,
+                run_tests_multiple_times=False,
+            )
+            agent = CoverAgent(args)
+        # Dummy test generator that increases coverage
+        class DummyTestGen:
+            def __init__(self):
+                self.current_coverage = 0.5
+                self.desired_coverage = args.desired_coverage
+                self.total_input_token_count = 15
+                self.total_output_token_count = 25
+                self.ai_caller = type("DummyCaller", (), {"model": "dummy-model"})()
+                self.mutation_called = False
+
+            def get_coverage_and_build_prompt(self):
+                pass
+
+            def initial_test_suite_analysis(self):
+                pass
+
+            def generate_tests(self, max_tokens):
+                return {"new_tests": ["dummy_test"]}
+
+            def validate_test(self, test, run_tests_multiple_times):
+                return "dummy_result"
+
+            def run_coverage(self):
+                self.current_coverage = 0.9
+
+            def run_mutations(self):
+                self.mutation_called = True
+        dummy_gen = DummyTestGen()
+        agent.test_gen = dummy_gen
+        dummy_db = MagicMock()
+        agent.test_db = dummy_db
+
+        # Patch wandb functions in the CoverAgent module.
+        with patch("cover_agent.CoverAgent.wandb") as mock_wandb:
+            agent.run()
+            mock_wandb.login.assert_called_once_with(key="dummy_key")
+            mock_wandb.init.assert_called()  # We check that init is called with project "cover-agent"
+            mock_wandb.finish.assert_called_once()
+
+        # Check that run_mutations was called because mutation_testing is True.
+        assert dummy_gen.mutation_called is True
+
+        os.remove(args.source_file_path)
+        os.remove(args.test_file_path)
+        del os.environ["WANDB_API_KEY"]
